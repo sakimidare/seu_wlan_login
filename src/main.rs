@@ -15,6 +15,9 @@ struct Args {
 
     #[arg(short, long)]
     password: Option<String>,
+
+    #[arg(short, long)]
+    debug: bool,
 }
 
 impl Args {
@@ -60,10 +63,14 @@ fn main() {
             std::process::exit(1);
         }
     };
-    login(account, password, Client::new()).unwrap_or_else(|e| {
+    let status = login(&account, &password, &Client::new()).unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(1);
     });
 
-    println!("Login successful!")
+    println!("Login successful!");
+
+    if args.debug {
+        println!("{:#?}", status)
+    }
 }

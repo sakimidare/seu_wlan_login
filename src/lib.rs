@@ -59,17 +59,45 @@ pub enum LoginError {
 }
 
 #[derive(Deserialize, Debug)]
-struct WlanStatus {
-    result: i32,
-    v46ip: String,
+pub struct WlanStatus {
+    /// 认证结果: 0 为未登录，1 为已登录
+    pub result: i32,
+    /// 当前内网分配的 IPv4 地址
+    pub v46ip: String,
+
+    /// 已上网时长（s）
+    pub time: Option<u64>,
+    /// 本次已使用流量 (KB)
+    pub flow: Option<u64>,
+    /// 网费余额 (单位是0.0001元)
+    pub fee: Option<u32>,
+
+    /// 一卡通号
+    pub uid: Option<String>,
+    /// 姓名
+    #[serde(rename = "NID")]
+    pub nid: Option<String>,
+
+    /// 上线时间
+    pub stime: Option<String>,
+    /// 状态更新时间
+    pub etime: Option<String>,
+
+    /// 限制最大时长
+    pub oltime: Option<u64>,
+    /// 限制最大流量
+    pub olflow: Option<u64>,
+
+    /// 其他字段
     #[serde(flatten)]
-    _extra_field: HashMap<String, Value>,
+    pub _extra_field: HashMap<String, Value>,
 }
 
 #[derive(Deserialize, Debug)]
-struct LoginStatus {
+pub struct LoginStatus {
     result: String,
     msg: String,
+    #[serde(rename = "ret_code")]
     _ret_code: i32,
 }
 
@@ -88,7 +116,7 @@ pub fn get_password_interactively() -> Result<String, InfoError> {
     Ok(password)
 }
 
-pub fn login(account: String, password: String, client: Client) -> Result<(), LoginError> {
+pub fn get_wlan_status(client: &Client) -> Result<WlanStatus, LoginError>{
     let pattern = Regex::new(r"\{.*}").unwrap();
 
     let wlan_res = client
@@ -96,37 +124,43 @@ pub fn login(account: String, password: String, client: Client) -> Result<(), Lo
         .send()?;
 
     let wlan_code = wlan_res.status();
-    if wlan_code.is_success() {
+    if !wlan_code.is_success() {
         return Err(LoginError::CodeError(
             wlan_code.as_u16(),
             wlan_code.canonical_reason().unwrap_or_default().to_string(),
         ));
     };
 
-    let wlan_status = match pattern.find(wlan_res.text()?.as_str()) {
-        Some(matched) => serde_json::from_str::<WlanStatus>(matched.as_str())?,
-        None => return Err(LoginError::ParseError),
-    };
+    match pattern.find(wlan_res.text()?.as_str()) {
+        Some(matched) => Ok(serde_json::from_str::<WlanStatus>(matched.as_str())?),
+        None => Err(LoginError::ParseError),
+    }
+}
 
-    match wlan_status.result {
-        1 => return Err(LoginError::AlreadyLoginError),
-        0 => (),
-        _ => return Err(LoginError::UnknownError),
-    };
+pub fn login_query(
+    account: &str,
+    password: &str,
+    v46ip: &str,
+    client: &Client
+) -> Result<LoginStatus, LoginError> {
+    let pattern = Regex::new(r"\{.*}").unwrap();
+    let query_params = [
+        ("c", "Portal"),
+        ("a", "login"),
+        ("callback", "dr1003"),
+        ("login_method", "1"),
+        ("user_account", &format!(",0,{}", account)),
+        ("user_password", password),
+        ("wlan_user_ip", v46ip),
+    ];
 
-    let login_url = format!(
-        "https://w.seu.edu.cn:801/eportal/?c=Portal&a=login&callback=dr1003\
-        &login_method=1\
-        &user_account=%2C0%2C{}\
-        &user_password={}\
-        &wlan_user_ip={}",
-        account, password, wlan_status.v46ip
-    );
-
-    let login_res = client.get(login_url).send()?;
+    let login_res = client
+        .get("https://w.seu.edu.cn:801/eportal/")
+        .query(&query_params)
+        .send()?;
 
     let login_code = login_res.status();
-    if login_code.is_success() {
+    if !login_code.is_success() {
         return Err(LoginError::CodeError(
             login_code.as_u16(),
             login_code
@@ -136,20 +170,36 @@ pub fn login(account: String, password: String, client: Client) -> Result<(), Lo
         ));
     };
 
-    let login_status = match pattern.find(login_res.text()?.as_str()) {
-        Some(matched) => serde_json::from_str::<LoginStatus>(matched.as_str())?,
-        None => return Err(LoginError::ParseError),
+    match pattern.find(login_res.text()?.as_str()) {
+        Some(matched) => Ok(serde_json::from_str::<LoginStatus>(matched.as_str())?),
+        None => Err(LoginError::ParseError),
+    }
+}
+
+pub fn login(account: &str, password: &str, client: &Client) -> Result<WlanStatus, LoginError> {
+    let wlan_status = get_wlan_status(client)?;
+    match wlan_status.result {
+        1 => return Err(LoginError::AlreadyLoginError),
+        0 => (),
+        _ => return Err(LoginError::UnknownError),
     };
+
+    let login_status = login_query(
+        account,
+        password,
+        &wlan_status.v46ip,
+        client
+    )?;
 
     if login_status.result != "1" {
         let message = String::from_utf8(BASE64_STANDARD.decode(login_status.msg)?)?;
 
-        return match message.as_str() {
+        return match message.as_str().trim() {
             "ldap auth error" => Err(LoginError::UsernameOrPasswordError),
             "userid error1" => Err(LoginError::UsernameDoesNotExistError),
             "userid error2" => Err(LoginError::PasswordError),
             _ => Err(LoginError::UnknownError),
         };
     }
-    Ok(())
+    Ok(get_wlan_status(client)?)
 }
