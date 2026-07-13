@@ -11,3 +11,4 @@ regex = "1.13.0"
 serde_json = "1.0.150"
 serde = { version = "1.0.228", features = ["derive"] }
 base64 = "0.22.1"
+rpassword = "7.5.4"

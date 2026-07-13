@@ -1,36 +1,35 @@
+use base64::prelude::*;
+use clap::ValueEnum;
+use regex::Regex;
+use reqwest::blocking::Client;
+use serde::Deserialize;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::io;
 use std::io::Write;
 use std::string::FromUtf8Error;
-use regex::Regex;
-use reqwest::blocking::Client;
-use serde::Deserialize;
 use thiserror::Error;
-use serde_json;
-use serde_json::Value;
-use base64::prelude::*;
+
+#[derive(ValueEnum, Copy, Clone, Debug, PartialEq)]
+#[clap(rename_all = "kebab-case")]
 pub enum Mode {
     Cli,
     Env,
     Inter,
-    Other(String)
 }
 
-impl From<&str> for Mode {
-    fn from(value: &str) -> Self {
-        match value {
-            "env" => Mode::Env,
-            "cli" => Mode::Cli,
-            "inter" => Mode::Inter,
-            s => Mode::Other(s.to_string())
-        }
-    }
-}
 #[derive(Error, Debug)]
 pub enum InfoError {
-    #[error("io error: {0}")]
+    #[error("error reading credentials interactively: {0}")]
     IoError(#[from] io::Error),
-
+    #[error("username is not provided: {0}")]
+    UsernameNotProvidedError(String),
+    #[error("password is not provided: {0}")]
+    PasswordNotProvidedError(String),
+    #[error("username is invalid")]
+    UsernameInvalidError,
+    #[error("password is invalid")]
+    PasswordInvalidError,
 }
 
 #[derive(Error, Debug)]
@@ -64,14 +63,14 @@ struct WlanStatus {
     result: i32,
     v46ip: String,
     #[serde(flatten)]
-    extra_field: HashMap<String, Value>
+    _extra_field: HashMap<String, Value>,
 }
 
 #[derive(Deserialize, Debug)]
 struct LoginStatus {
     result: String,
     msg: String,
-    ret_code: i32,
+    _ret_code: i32,
 }
 
 // dr1003({"result":"0","msg":"bGRhcCBhdXRoIGVycm9y","ret_code":1})
@@ -85,18 +84,11 @@ pub fn get_account_interactively() -> Result<String, InfoError> {
 }
 
 pub fn get_password_interactively() -> Result<String, InfoError> {
-    print!("Input your password: ");
-    io::stdout().flush()?;
-    let mut buffer = String::new();
-    io::stdin().read_line(&mut buffer)?;
-    Ok(buffer.trim().to_string())
+    let password = rpassword::prompt_password("Input your password: ")?;
+    Ok(password)
 }
 
-pub fn login(
-    account: String,
-    password: String,
-    client: Client
-) -> Result<(), LoginError> {
+pub fn login(account: String, password: String, client: Client) -> Result<(), LoginError> {
     let pattern = Regex::new(r"\{.*}").unwrap();
 
     let wlan_res = client
@@ -105,18 +97,21 @@ pub fn login(
 
     let wlan_code = wlan_res.status();
     if wlan_code.is_success() {
-        return Err(LoginError::CodeError(wlan_code.as_u16(), wlan_code.canonical_reason().unwrap_or_default().to_string()))
+        return Err(LoginError::CodeError(
+            wlan_code.as_u16(),
+            wlan_code.canonical_reason().unwrap_or_default().to_string(),
+        ));
     };
 
     let wlan_status = match pattern.find(wlan_res.text()?.as_str()) {
         Some(matched) => serde_json::from_str::<WlanStatus>(matched.as_str())?,
-        None => return Err(LoginError::ParseError)
+        None => return Err(LoginError::ParseError),
     };
 
     match wlan_status.result {
         1 => return Err(LoginError::AlreadyLoginError),
         0 => (),
-        _ => return Err(LoginError::UnknownError)
+        _ => return Err(LoginError::UnknownError),
     };
 
     let login_url = format!(
@@ -125,36 +120,36 @@ pub fn login(
         &user_account=%2C0%2C{}\
         &user_password={}\
         &wlan_user_ip={}",
-        account,
-        password,
-        wlan_status.v46ip
+        account, password, wlan_status.v46ip
     );
 
-    let login_res = client
-        .get(login_url)
-        .send()?;
+    let login_res = client.get(login_url).send()?;
 
     let login_code = login_res.status();
     if login_code.is_success() {
-        return Err(LoginError::CodeError(login_code.as_u16(), login_code.canonical_reason().unwrap_or_default().to_string()))
+        return Err(LoginError::CodeError(
+            login_code.as_u16(),
+            login_code
+                .canonical_reason()
+                .unwrap_or_default()
+                .to_string(),
+        ));
     };
 
     let login_status = match pattern.find(login_res.text()?.as_str()) {
         Some(matched) => serde_json::from_str::<LoginStatus>(matched.as_str())?,
-        None => return Err(LoginError::ParseError)
+        None => return Err(LoginError::ParseError),
     };
 
     if login_status.result != "1" {
-        let message = String::from_utf8(
-            BASE64_STANDARD.decode(login_status.msg)?
-        )?;
+        let message = String::from_utf8(BASE64_STANDARD.decode(login_status.msg)?)?;
 
         return match message.as_str() {
             "ldap auth error" => Err(LoginError::UsernameOrPasswordError),
             "userid error1" => Err(LoginError::UsernameDoesNotExistError),
             "userid error2" => Err(LoginError::PasswordError),
-            _ => Err(LoginError::UnknownError)
-        }
+            _ => Err(LoginError::UnknownError),
+        };
     }
     Ok(())
 }
