@@ -19,14 +19,14 @@ fn main() {
     let args = Args::parse();
     let mode = Mode::from(args.mode.deref());
     let account = match mode {
-        Mode::Cli => args.account.unwrap(),
+        Mode::Cli => args.account.expect("--account does not provide an account"),
         Mode::Env => std::env::var("SEU_WLAN_ACCOUNT").expect("SEU_WLAN_ACCOUNT variable does not exist"),
         Mode::Inter => get_account_interactively().unwrap(),
         Mode::Other(s) => panic!("unknown mode")
     };
 
     let password = match mode {
-        Mode::Cli => args.password.unwrap(),
+        Mode::Cli => args.password.expect("--password does not provide a password"),
         Mode::Env => std::env::var("SEU_WLAN_PASSWORD").expect("SEU_WLAN_PASSWORD variable does not exist"),
         Mode::Inter => get_password_interactively().unwrap(),
         Mode::Other(s) => unreachable!()
