@@ -98,7 +98,7 @@ pub struct LoginStatus {
     result: String,
     msg: String,
     #[serde(rename = "ret_code")]
-    _ret_code: i32,
+    _ret_code: Option<i32>
 }
 
 // dr1003({"result":"0","msg":"bGRhcCBhdXRoIGVycm9y","ret_code":1})
@@ -169,8 +169,8 @@ pub fn login_query(
                 .to_string(),
         ));
     };
-
-    match pattern.find(login_res.text()?.as_str()) {
+    let text = login_res.text()?;
+    match pattern.find(&text) {
         Some(matched) => Ok(serde_json::from_str::<LoginStatus>(matched.as_str())?),
         None => Err(LoginError::ParseError),
     }
