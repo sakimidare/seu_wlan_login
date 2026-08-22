@@ -116,7 +116,7 @@ pub fn get_password_interactively() -> Result<String, InfoError> {
     Ok(password)
 }
 
-pub fn get_wlan_status(client: &Client) -> Result<WlanStatus, LoginError>{
+pub fn get_wlan_status(client: &Client, debug: bool) -> Result<WlanStatus, LoginError>{
     let pattern = Regex::new(r"\{.*}").unwrap();
 
     let wlan_res = client
@@ -130,9 +130,20 @@ pub fn get_wlan_status(client: &Client) -> Result<WlanStatus, LoginError>{
             wlan_code.canonical_reason().unwrap_or_default().to_string(),
         ));
     };
+    let text = wlan_res.text()?;
 
-    match pattern.find(wlan_res.text()?.as_str()) {
-        Some(matched) => Ok(serde_json::from_str::<WlanStatus>(matched.as_str())?),
+    if debug {
+        eprintln!("[DEBUG] raw status response: {text}");
+    }
+
+    match pattern.find(text.as_str()) {
+        Some(matched) => {
+            let status = serde_json::from_str::<WlanStatus>(matched.as_str())?;
+            if debug {
+                eprintln!("[DEBUG] parsed wlan status: {status:#?}");
+            }
+            Ok(status)
+        }
         None => Err(LoginError::ParseError),
     }
 }
@@ -141,7 +152,8 @@ pub fn login_query(
     account: &str,
     password: &str,
     v46ip: &str,
-    client: &Client
+    client: &Client,
+    debug: bool,
 ) -> Result<LoginStatus, LoginError> {
     let pattern = Regex::new(r"\{.*}").unwrap();
     let query_params = [
@@ -153,6 +165,13 @@ pub fn login_query(
         ("user_password", password),
         ("wlan_user_ip", v46ip),
     ];
+
+    if debug {
+        eprintln!("[DEBUG] login request to https://w.seu.edu.cn:801/eportal/ with query params:");
+        for (key, value) in query_params {
+            eprintln!("  {key} = {value}");
+        }
+    }
 
     let login_res = client
         .get("https://w.seu.edu.cn:801/eportal/")
@@ -170,14 +189,30 @@ pub fn login_query(
         ));
     };
     let text = login_res.text()?;
+
+    if debug {
+        eprintln!("[DEBUG] raw login response: {text}");
+    }
+
     match pattern.find(&text) {
-        Some(matched) => Ok(serde_json::from_str::<LoginStatus>(matched.as_str())?),
+        Some(matched) => {
+            let status = serde_json::from_str::<LoginStatus>(matched.as_str())?;
+            if debug {
+                eprintln!("[DEBUG] parsed login status: {status:#?}");
+            }
+            Ok(status)
+        }
         None => Err(LoginError::ParseError),
     }
 }
 
-pub fn login(account: &str, password: &str, client: &Client) -> Result<WlanStatus, LoginError> {
-    let wlan_status = get_wlan_status(client)?;
+pub fn login(
+    account: &str,
+    password: &str,
+    client: &Client,
+    debug: bool,
+) -> Result<WlanStatus, LoginError> {
+    let wlan_status = get_wlan_status(client, debug)?;
     match wlan_status.result {
         1 => return Err(LoginError::AlreadyLoginError),
         0 => (),
@@ -188,11 +223,16 @@ pub fn login(account: &str, password: &str, client: &Client) -> Result<WlanStatu
         account,
         password,
         &wlan_status.v46ip,
-        client
+        client,
+        debug,
     )?;
 
     if login_status.result != "1" {
         let message = String::from_utf8(BASE64_STANDARD.decode(login_status.msg)?)?;
+
+        if debug {
+            eprintln!("[DEBUG] decoded error message: {message}");
+        }
 
         return match message.as_str().trim() {
             "ldap auth error" => Err(LoginError::UsernameOrPasswordError),
@@ -201,5 +241,10 @@ pub fn login(account: &str, password: &str, client: &Client) -> Result<WlanStatu
             _ => Err(LoginError::UnknownError),
         };
     }
-    Ok(get_wlan_status(client)?)
+
+    let final_status = get_wlan_status(client, debug)?;
+    if debug {
+        eprintln!("[DEBUG] login successful, final status: {final_status:#?}");
+    }
+    Ok(final_status)
 }

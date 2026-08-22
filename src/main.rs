@@ -63,14 +63,10 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let status = login(&account, &password, &Client::new()).unwrap_or_else(|e| {
+    login(&account, &password, &Client::new(), args.debug).unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(1);
     });
 
     println!("Login successful!");
-
-    if args.debug {
-        println!("{:#?}", status)
-    }
 }
